@@ -1,0 +1,27 @@
+{
+  "name": "rivet",
+  "version": "0.1.0",
+  "module": "index.ts",
+  "type": "module",
+  "bin": {
+    "rivet": "./index.ts"
+  },
+  "private": true,
+  "scripts": {
+    "postinstall": "chmod +x node_modules/@cursor-ai/january/bin/rg 2>/dev/null || true"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@cursor-ai/january": "^0.2.1",
+    "@types/inquirer": "^9.0.9",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.2",
+    "inquirer": "^13.0.2",
+    "ora": "^9.0.0"
+  }
+}
