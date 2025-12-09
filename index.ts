@@ -931,17 +931,28 @@ Return ONLY valid JSON in this exact format:
     // Create PR using gh CLI
     const createSpinner = ora("Creating PR on GitHub...").start();
     const draftFlag = options.draft ? ["--draft"] : [];
-    const labels = finalPrData.labels?.length 
-      ? ["--label", finalPrData.labels.join(",")]
-      : [];
 
     try {
-      const prResult = await Bun.$`gh pr create --title ${finalPrData.title} --body ${finalPrData.body} --base ${baseBranch} ${draftFlag} ${labels}`.quiet();
+      const prResult = await Bun.$`gh pr create --title ${finalPrData.title} --body ${finalPrData.body} --base ${baseBranch} ${draftFlag}`.quiet();
       const prUrl = prResult.stdout.toString().trim();
       createSpinner.succeed(chalk.green("PR created successfully!"));
       console.log(chalk.green("\nPR created:"), chalk.cyan.underline(prUrl));
+
+      // Note about labels if any were suggested
+      if (finalPrData.labels?.length) {
+        console.log(chalk.gray(`\nTip: Suggested labels (${finalPrData.labels.join(", ")}) can be added manually on GitHub.`));
+      }
     } catch (error) {
       createSpinner.fail(chalk.red("Failed to create PR"));
+
+      // Show the actual error from gh CLI
+      if (error && typeof error === 'object' && 'stderr' in error) {
+        const stderr = (error as any).stderr?.toString?.() || '';
+        if (stderr) {
+          console.error(chalk.gray("GitHub CLI error:"), stderr.trim());
+        }
+      }
+
       throw error;
     }
   } catch (error) {
