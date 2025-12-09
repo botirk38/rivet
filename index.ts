@@ -32,9 +32,23 @@ type CommitStylePromptResult = { commitStyle: CommitStyle };
 type CommitSystemPromptResult = { commitSystemPrompt: string };
 type PrSystemPromptResult = { prSystemPrompt: string };
 type PushPromptResult = { push: boolean };
+type CommitFirstPromptResult = { commitFirst: boolean };
 
 // Agent message types
 type TextMessage = { text?: string };
+
+// Analysis types
+type AnalysisMode = "commit" | "pr";
+
+type AnalysisContext = {
+  diff: string;
+  branch: string;
+  files: string[];
+  commits?: string;  // Only for PR
+  prTemplate?: string;  // Only for PR, if exists
+};
+
+
 
 // Load config from file
 async function loadConfig(): Promise<RivetConfig | null> {
@@ -100,6 +114,24 @@ async function getChangedFilesCount(baseBranch: string): Promise<number> {
   }
 }
 
+async function getChangedFiles(baseBranch: string): Promise<string[]> {
+  try {
+    const result = await Bun.$`git diff --name-only ${baseBranch}...HEAD`.quiet();
+    return result.stdout.toString().trim().split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function hasUncommittedChanges(): Promise<boolean> {
+  try {
+    const result = await Bun.$`git status --porcelain`.quiet();
+    return result.stdout.toString().trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function createCommit(message: string, noVerify = false): Promise<void> {
   const flags = noVerify ? ["--no-verify"] : [];
   await Bun.$`git commit -m ${message} ${flags}`;
@@ -127,6 +159,88 @@ async function hasUpstream(): Promise<boolean> {
 async function pushToRemote(branch: string, setUpstream: boolean = false): Promise<void> {
   const flags = setUpstream ? ["-u", "origin", branch] : [];
   await Bun.$`git push ${flags}`;
+}
+
+// PR template helper
+async function getPRTemplate(): Promise<string | null> {
+  const templatePath = ".github/PULL_REQUEST_TEMPLATE.md";
+  try {
+    const file = Bun.file(join(process.cwd(), templatePath));
+    if (await file.exists()) {
+      return await file.text();
+    }
+  } catch {
+    // Ignore errors, template doesn't exist
+  }
+  return null;
+}
+
+// Analysis helper (Turn 1)
+async function analyzeChanges(
+  context: AnalysisContext,
+  mode: AnalysisMode
+): Promise<string> {
+  const agent = await createAgent();
+
+  let prompt: string;
+  if (mode === "commit") {
+    prompt = `Analyze these staged git changes and provide a concise summary.
+
+Branch: ${context.branch}
+Files changed: ${context.files.length}
+${context.files.map(f => `• ${f}`).join('\n')}
+
+Git diff:
+${context.diff}
+
+Summarize:
+1. What type of change is this (feature, fix, refactor, docs, test, etc.)
+2. What is the main purpose of these changes
+3. Any notable implementation details
+
+Keep your summary concise (2-4 sentences).`;
+  } else {
+    // PR mode
+    prompt = `Analyze these branch changes for a pull request.
+
+Branch: ${context.branch}
+Files changed: ${context.files.length}
+Commits:
+${context.commits}
+
+Git diff:
+${context.diff}
+
+Provide a detailed analysis:
+1. What type of changes (feature, fix, refactor, etc.)
+2. The overall story/purpose of this branch
+3. Key implementation details
+4. Any breaking changes or important notes
+5. Suggested labels (bug, feature, enhancement, docs, etc.)
+
+Keep analysis clear and comprehensive.`;
+  }
+
+  let summary = "";
+  const result = agent.submit({
+    message: prompt,
+    onStep: ({ step }) => {
+      if (step.type === "assistantMessage") {
+        const msg = step.message as TextMessage;
+        if (msg?.text) {
+          summary = msg.text.trim();
+        }
+      }
+    }
+  });
+
+  await result.conversation;
+
+  if (!summary) {
+    throw new Error("Failed to get analysis from agent");
+  }
+
+  return summary;
 }
 
 // Initialize agent
@@ -324,10 +438,18 @@ async function commitCommand(options: { "no-verify"?: boolean; yes?: boolean }) 
       console.log(chalk.gray(`   ... and ${files.length - 5} more`));
     }
 
-    // Generate commit message
+    // Analyze changes (Turn 1)
+    const analyzeSpinner = ora(chalk.blue("Analyzing changes...")).start();
+    const summary = await analyzeChanges(
+      { diff, branch, files },
+      "commit"
+    );
+    analyzeSpinner.succeed(chalk.green("Changes analyzed"));
+
+    // Generate commit message (Turn 2)
     const generateSpinner = ora(chalk.blue("Generating commit message...")).start();
 
-    const agent = await createAgent();
+    const agent = await createAgent();  // Fresh agent for generation
     const config = await loadConfig();
 
     // Build prompt with style and system instructions
@@ -341,22 +463,25 @@ async function commitCommand(options: { "no-verify"?: boolean; yes?: boolean }) 
 
     const prompt = `${stylePrompt}${systemPrompt}
 
-Analyze these git changes and create a commit message.
+Based on this analysis of the changes:
+${summary}
 
-Branch: ${branch}
+Generate a commit message. Return ONLY the commit message.`;
 
-Git diff:
-${diff}
-
-Return ONLY a commit message.`;
+    // Stop spinner and start streaming
+    generateSpinner.stop();
+    console.log(chalk.blue("\nCommit message:"));
+    console.log(chalk.gray("─".repeat(60)));
 
     let commitMessage = "";
+    let streamedMessage = "";
 
-    const result = agent.submit({ 
+    const result = agent.submit({
       message: prompt,
       onDelta: ({ update }) => {
-        if (update.type === "text-delta") {
-          generateSpinner.text = chalk.blue("Generating commit message...");
+        if (update.type === "text-delta" && update.text) {
+          streamedMessage += update.text;
+          process.stdout.write(chalk.cyan(update.text));
         }
       },
       onStep: ({ step }) => {
@@ -368,72 +493,101 @@ Return ONLY a commit message.`;
         }
       }
     });
-    
+
     const conversation = await result.conversation;
-    
-    // If onStep didn't capture, fall back to scanning conversation (functional style)
+
+    console.log("\n" + chalk.gray("─".repeat(60)));
+
+    // Use streamed message as fallback
     if (!commitMessage) {
-      commitMessage = extractLastAssistantMessage(conversation as ConversationTurn[]) ?? "";
+      const extracted = extractLastAssistantMessage(conversation as ConversationTurn[]);
+      commitMessage = streamedMessage.trim() || extracted || "";
     }
-    
+
     if (!commitMessage) {
-      generateSpinner.fail(chalk.red("Failed to extract commit message from agent response"));
-      const debugInfo = conversation.map(t => ({ 
-        type: (t as ConversationTurn)?.type, 
-        stepsCount: (t as ConversationTurn)?.type === "agentConversationTurn" 
-          ? (t as ConversationTurn).turn?.steps?.length 
-          : 0 
-      }));
-      console.error(chalk.gray("\nDebug: Conversation structure:"), JSON.stringify(debugInfo, null, 2));
+      console.error(chalk.gray("\nDebug: Conversation structure:"), JSON.stringify(
+        conversation.map(t => ({
+          type: (t as ConversationTurn)?.type,
+          stepsCount: (t as ConversationTurn)?.type === "agentConversationTurn"
+            ? (t as ConversationTurn).turn?.steps?.length
+            : 0
+        })), null, 2));
       throw new Error("Failed to extract commit message from agent response");
     }
 
-    generateSpinner.succeed(chalk.green("Commit message generated"));
+    // Inline confirmation loop with streaming regeneration
+    let finalMessage = commitMessage;
+    let accepted = false;
 
-    // Helper to generate message with agent
-    const generateMessage = async (prompt: string): Promise<string | null> => {
-      let message = "";
-      const genResult = agent.submit({
-        message: prompt,
-        onStep: ({ step }) => {
-          if (step.type === "assistantMessage") {
-            const msg = step.message as TextMessage;
-            if (msg?.text) message = msg.text.trim();
-          }
-        }
-      });
-      const convo = await genResult.conversation;
-      return message || extractLastAssistantMessage(convo as ConversationTurn[]);
-    };
+    while (!accepted) {
+      if (options.yes) {
+        accepted = true;
+        break;
+      }
 
-    // REPL loop for refinement
-    const { accepted, value: finalMessage } = await replLoop(
-      commitMessage,
-      {
-        display: (msg) => {
-          console.log(chalk.blue("\nGenerated commit message:"));
-          console.log(chalk.gray("─".repeat(60)));
-          console.log(formatCommitMessage(msg));
-          console.log(chalk.gray("─".repeat(60)));
+      const { accept } = await inquirer.prompt<ConfirmPromptResult>([
+        {
+          type: "confirm",
+          name: "accept",
+          message: "Accept this commit message?",
+          default: true,
         },
-        regenerate: async (feedback) => {
-          const prompt = `The previous commit message was:
-${commitMessage}
+      ]);
+
+      if (accept) {
+        accepted = true;
+      } else {
+        // User said no - get feedback
+        const { feedback } = await inquirer.prompt<FeedbackPromptResult>([
+          {
+            type: "input",
+            name: "feedback",
+            message: "How should it be improved?",
+          },
+        ]);
+
+        // Empty feedback = cancel
+        if (!feedback.trim()) {
+          console.log(chalk.yellow("Cancelled. No commit created."));
+          return;
+        }
+
+        // Regenerate with streaming
+        console.log(chalk.gray("─".repeat(60)));
+
+        const regenPrompt = `The previous commit message was:
+${finalMessage}
 
 The user wants this improvement: ${feedback}
 
-Generate an improved commit message based on this feedback. Return ONLY the commit message.`;
-          return generateMessage(prompt);
-        },
-        spinnerText: "Regenerating commit message...",
-        confirmMessage: "Accept this commit message?",
-      },
-      options.yes ?? false
-    );
+Based on the same analysis of changes, generate an improved commit message. Return ONLY the commit message.`;
 
-    if (!accepted) {
-      console.log(chalk.yellow("Cancelled. No commit created."));
-      return;
+        let newMessage = "";
+        let streamedNewMessage = "";
+
+        const regenResult = agent.submit({
+          message: regenPrompt,
+          onDelta: ({ update }) => {
+            if (update.type === "text-delta" && update.text) {
+              streamedNewMessage += update.text;
+              process.stdout.write(chalk.cyan(update.text));
+            }
+          },
+          onStep: ({ step }) => {
+            if (step.type === "assistantMessage") {
+              const msg = step.message as TextMessage;
+              if (msg?.text) newMessage = msg.text.trim();
+            }
+          }
+        });
+
+        const regenConversation = await regenResult.conversation;
+
+        console.log("\n" + chalk.gray("─".repeat(60)));
+
+        const extracted = extractLastAssistantMessage(regenConversation as ConversationTurn[]);
+        finalMessage = newMessage || streamedNewMessage.trim() || extracted || finalMessage;
+      }
     }
 
     // Create commit
@@ -506,19 +660,49 @@ async function raisePRCommand(options: { base?: string; draft?: boolean; yes?: b
     const config = await loadConfig();
     const baseBranch = options.base || config?.defaultBaseBranch || await getBaseBranch();
 
-    // Analyze changes
-    const analyzeSpinner = ora(`Analyzing changes from ${chalk.white(baseBranch)} to ${chalk.white(currentBranch)}...`).start();
+    // Stage all changes first
+    const stageSpinner = ora("Staging changes...").start();
+    await Bun.$`git add .`.quiet();
+    stageSpinner.succeed(chalk.green("Changes staged"));
+
+    // Check for uncommitted changes
+    if (await hasUncommittedChanges()) {
+      const { commitFirst } = await inquirer.prompt<CommitFirstPromptResult>([
+        {
+          type: "confirm",
+          name: "commitFirst",
+          message: "You have uncommitted changes. Commit them first?",
+          default: true,
+        },
+      ]);
+
+      if (commitFirst) {
+        console.log(chalk.blue("\nCommitting changes first...\n"));
+        await commitCommand({ "no-verify": false, yes: false });
+        console.log("");  // Add spacing
+      } else {
+        console.log(chalk.yellow("Warning: Uncommitted changes will not be included in the PR.\n"));
+      }
+    }
+
+    // Get changes data
     const diff = await getBranchDiff(baseBranch);
     const commits = await getBranchCommits(baseBranch);
     const filesCount = await getChangedFilesCount(baseBranch);
     const commitsList = commits.trim().split("\n").filter(Boolean);
 
     if (!diff.trim() && !commits.trim()) {
-      analyzeSpinner.fail(chalk.red(`No changes found between ${baseBranch} and ${currentBranch}`));
       throw new Error(`No changes found between ${baseBranch} and ${currentBranch}`);
     }
 
-    analyzeSpinner.succeed(chalk.green(`Found ${filesCount} file(s) changed, ${commitsList.length} commit(s)`));
+    // Get files list for analysis
+    const files = await getChangedFiles(baseBranch);
+
+    // Check for PR template
+    const prTemplate = await getPRTemplate();
+    if (prTemplate) {
+      console.log(chalk.gray(`✓ Found PR template: .github/PULL_REQUEST_TEMPLATE.md`));
+    }
 
     // Show summary
     console.log(chalk.blue("\nSummary:"));
@@ -536,27 +720,52 @@ async function raisePRCommand(options: { base?: string; draft?: boolean; yes?: b
       console.log(chalk.gray(`   ... and ${commitsList.length - 3} more`));
     }
 
-    // Generate PR content
+    // Analyze changes (Turn 1)
+    const analyzeSpinner = ora(chalk.blue("Analyzing changes...")).start();
+    const summary = await analyzeChanges(
+      { diff, branch: currentBranch, files, commits, prTemplate: prTemplate || undefined },
+      "pr"
+    );
+    analyzeSpinner.succeed(chalk.green("Changes analyzed"));
+
+    // Generate PR content (Turn 2)
     const generateSpinner = ora(chalk.blue("Generating PR content...")).start();
 
-    const agent = await createAgent();
+    const agent = await createAgent();  // Fresh agent for generation
     const prConfig = await loadConfig();
 
-    // Build prompt with system instructions
+    // Build prompt with system instructions and template
     const systemPrompt = prConfig?.prSystemPrompt
       ? `${prConfig.prSystemPrompt}\n\n`
       : "";
 
-    const prompt = `${systemPrompt}Create a GitHub PR for these changes.
+    let prompt: string;
+    if (prTemplate) {
+      prompt = `${systemPrompt}Based on this analysis of the changes:
+${summary}
 
-Branch: ${currentBranch}
-Base branch: ${baseBranch}
+Generate PR content following this template:
 
-Commits:
-${commits}
+---TEMPLATE START---
+${prTemplate}
+---TEMPLATE END---
 
-Git diff:
-${diff}
+Fill in all sections appropriately. Keep any section headers but replace
+placeholder text with actual content based on the changes.
+
+Return ONLY valid JSON in this exact format:
+{
+  "title": "PR title here",
+  "body": "filled template content",
+  "labels": ["label1", "label2"]
+}
+
+Use appropriate labels like: bug, feature, enhancement, documentation, refactor, etc.`;
+    } else {
+      prompt = `${systemPrompt}Based on this analysis of the changes:
+${summary}
+
+Generate PR content.
 
 Return ONLY valid JSON in this exact format:
 {
@@ -566,10 +775,11 @@ Return ONLY valid JSON in this exact format:
 }
 
 Use appropriate labels like: bug, feature, enhancement, documentation, refactor, etc.`;
+    }
 
     let responseText = "";
 
-    const result = agent.submit({ 
+    const result = agent.submit({
       message: prompt,
       onDelta: ({ update }) => {
         if (update.type === "text-delta") {
@@ -585,31 +795,31 @@ Use appropriate labels like: bug, feature, enhancement, documentation, refactor,
         }
       }
     });
-    
+
     const conversation = await result.conversation;
-    
+
     // If onStep didn't capture, fall back to scanning conversation (functional style)
     if (!responseText) {
       responseText = extractLastAssistantMessage(conversation as ConversationTurn[]) ?? "";
     }
-    
+
     if (!responseText) {
       generateSpinner.fail(chalk.red("Failed to extract PR content from agent response"));
-      const debugInfo = conversation.map(t => ({ 
-        type: (t as ConversationTurn)?.type, 
-        stepsCount: (t as ConversationTurn)?.type === "agentConversationTurn" 
-          ? (t as ConversationTurn).turn?.steps?.length 
-          : 0 
+      const debugInfo = conversation.map(t => ({
+        type: (t as ConversationTurn)?.type,
+        stepsCount: (t as ConversationTurn)?.type === "agentConversationTurn"
+          ? (t as ConversationTurn).turn?.steps?.length
+          : 0
       }));
       console.error(chalk.gray("\nDebug: Conversation structure:"), JSON.stringify(debugInfo, null, 2));
       throw new Error("Failed to extract PR content from agent response");
     }
-    
+
     // Extract JSON from response (handle markdown code blocks)
     const extractJson = (text: string): string => {
       const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*\})\s*```/);
       if (codeBlockMatch?.[1]) return codeBlockMatch[1];
-      
+
       const directMatch = text.match(/\{[\s\S]*\}/);
       return directMatch?.[0] ?? text;
     };
@@ -638,22 +848,22 @@ Use appropriate labels like: bug, feature, enhancement, documentation, refactor,
       labels?: string[];
     }
 
-    // Helper to generate PR content with agent
+    // Helper to generate PR content with agent (continues conversation)
     const generatePrContent = async (prompt: string): Promise<PrData | null> => {
       let text = "";
       const genResult = agent.submit({
         message: prompt,
-      onStep: ({ step }) => {
-        if (step.type === "assistantMessage") {
-          const msg = step.message as TextMessage;
-          if (msg?.text) text = msg.text.trim();
+        onStep: ({ step }) => {
+          if (step.type === "assistantMessage") {
+            const msg = step.message as TextMessage;
+            if (msg?.text) text = msg.text.trim();
+          }
         }
-      }
       });
       const convo = await genResult.conversation;
       const responseText = text || extractLastAssistantMessage(convo as ConversationTurn[]);
       if (!responseText) return null;
-      
+
       try {
         const jsonText = extractJson(responseText);
         const parsed = JSON.parse(jsonText);
@@ -686,6 +896,10 @@ Use appropriate labels like: bug, feature, enhancement, documentation, refactor,
       {
         display: displayPr,
         regenerate: async (feedback) => {
+          const templateSection = prTemplate
+            ? `\n\nFollow this template:\n---TEMPLATE START---\n${prTemplate}\n---TEMPLATE END---\n\nFill in all sections appropriately.`
+            : "";
+
           const prompt = `The previous PR content was:
 Title: ${prData.title}
 Body: ${prData.body}
@@ -693,10 +907,12 @@ Labels: ${prData.labels?.join(", ") ?? "none"}
 
 The user wants this improvement: ${feedback}
 
-Generate improved PR content based on this feedback. Return ONLY valid JSON in this exact format:
+Based on the same analysis of changes, generate improved PR content.${templateSection}
+
+Return ONLY valid JSON in this exact format:
 {
   "title": "PR title here",
-  "body": "PR description here",
+  "body": "${prTemplate ? 'filled template content' : 'PR description here. Explain what changed and why.'}",
   "labels": ["label1", "label2"]
 }`;
           return generatePrContent(prompt);
