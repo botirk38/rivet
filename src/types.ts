@@ -1,12 +1,12 @@
 export type CommitStyle = "conventional" | "angular" | "simple" | "emoji";
 
 export interface RivetConfig {
-  apiKey?: string;
-  model?: string;
-  defaultBaseBranch?: string;
-  commitStyle?: CommitStyle;
-  commitSystemPrompt?: string;
-  prSystemPrompt?: string;
+	apiKey?: string;
+	model?: string;
+	defaultBaseBranch?: string;
+	commitStyle?: CommitStyle;
+	commitSystemPrompt?: string;
+	prSystemPrompt?: string;
 }
 
 // Prompt result types
@@ -29,40 +29,40 @@ export type TextMessage = { text?: string };
 export type AnalysisMode = "commit" | "pr";
 
 export type FileChangeStats = {
-  file: string;
-  insertions: number;
-  deletions: number;
+	file: string;
+	insertions: number;
+	deletions: number;
 };
 
 export type AnalysisContext = {
-  stats: FileChangeStats[];
-  branch: string;
-  commits?: string;  // Only for PR
-  prTemplate?: string;  // Only for PR, if exists
+	stats: FileChangeStats[];
+	branch: string;
+	commits?: string; // Only for PR
+	prTemplate?: string; // Only for PR, if exists
 };
 
 // Type definitions for conversation parsing
 export type ConversationTurn = {
-  type: string;
-  turn?: {
-    steps?: Array<{
-      type: string;
-      message?: { text?: string };
-    }>;
-  };
+	type: string;
+	turn?: {
+		steps?: Array<{
+			type: string;
+			message?: { text?: string };
+		}>;
+	};
 };
 
 // REPL loop for interactive refinement
 export interface ReplOptions<T> {
-  display: (value: T) => void;
-  regenerate: (feedback: string) => Promise<T | null>;
-  spinnerText: string;
-  confirmMessage: string;
+	display: (value: T) => void;
+	regenerate: (feedback: string) => Promise<T | null>;
+	spinnerText: string;
+	confirmMessage: string;
 }
 
 // PR data type
 export interface PrData {
-  title: string;
-  body: string;
-  labels?: string[];
+	title: string;
+	body: string;
+	labels?: string[];
 }
