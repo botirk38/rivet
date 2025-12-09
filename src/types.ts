@@ -28,10 +28,15 @@ export type TextMessage = { text?: string };
 // Analysis types
 export type AnalysisMode = "commit" | "pr";
 
+export type FileChangeStats = {
+  file: string;
+  insertions: number;
+  deletions: number;
+};
+
 export type AnalysisContext = {
-  diff: string;
+  stats: FileChangeStats[];
   branch: string;
-  files: string[];
   commits?: string;  // Only for PR
   prTemplate?: string;  // Only for PR, if exists
 };

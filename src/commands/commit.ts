@@ -2,8 +2,7 @@ import chalk from "chalk";
 import ora from "ora";
 import inquirer from "inquirer";
 import {
-  getStagedDiff,
-  getStagedFiles,
+  getStagedStats,
   getCurrentBranch,
   createCommit,
   pushToRemote,
@@ -47,48 +46,46 @@ export async function commitCommand(options: { "no-verify"?: boolean; yes?: bool
     const stageSpinner = ora("Staging all changes...").start();
     await Bun.$`git add .`.quiet();
 
-    // Get staged files count
-    const stagedFiles = await getStagedFiles();
-    if (stagedFiles.length > 0) {
-      stageSpinner.succeed(chalk.green(`Staged ${stagedFiles.length} file(s)`));
+    // Get staged stats
+    const stats = await getStagedStats();
+    if (stats.length > 0) {
+      stageSpinner.succeed(chalk.green(`Staged ${stats.length} file(s)`));
     } else {
       stageSpinner.succeed(chalk.green("Changes staged"));
     }
 
-    // Verify we have staged changes (check both diff and status)
-    const diff = await getStagedDiff();
+    // Verify we have staged changes
     const stagedStatus = await Bun.$`git status --porcelain`.quiet();
     const hasStagedChanges = stagedStatus.stdout.toString().trim().split("\n").some(line => {
       const status = line.substring(0, 2);
       return status.includes("A") || status.includes("M") || status.includes("D");
     });
 
-    if (!diff.trim() && !hasStagedChanges) {
+    if (!hasStagedChanges) {
       throw new Error("No changes to commit");
     }
 
     const branch = await getCurrentBranch();
-    const files = await getStagedFiles();
 
     // Show summary
     console.log(chalk.blue("\nSummary:"));
     console.log(chalk.gray(`   Branch: ${chalk.white(branch)}`));
-    console.log(chalk.gray(`   Files: ${chalk.white(files.length)} file(s) changed`));
-    if (files.length <= 10) {
-      files.forEach(file => {
-        console.log(chalk.gray(`   • ${file}`));
+    console.log(chalk.gray(`   Files: ${chalk.white(stats.length)} file(s) changed`));
+    if (stats.length <= 10) {
+      stats.forEach(stat => {
+        console.log(chalk.gray(`   • ${stat.file} (+${stat.insertions}/-${stat.deletions})`));
       });
     } else {
-      files.slice(0, 5).forEach(file => {
-        console.log(chalk.gray(`   • ${file}`));
+      stats.slice(0, 5).forEach(stat => {
+        console.log(chalk.gray(`   • ${stat.file} (+${stat.insertions}/-${stat.deletions})`));
       });
-      console.log(chalk.gray(`   ... and ${files.length - 5} more`));
+      console.log(chalk.gray(`   ... and ${stats.length - 5} more`));
     }
 
     // Analyze changes (Turn 1)
     const analyzeSpinner = ora(chalk.blue("Analyzing changes...")).start();
     const summary = await analyzeChanges(
-      { diff, branch, files },
+      { stats, branch },
       "commit"
     );
     analyzeSpinner.succeed(chalk.green("Changes analyzed"));

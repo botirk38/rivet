@@ -46,41 +46,31 @@ export async function analyzeChanges(
 
   let prompt: string;
   if (mode === "commit") {
-    prompt = `Analyze these staged git changes and provide a concise summary.
+    prompt = `Analyze these staged git changes for a commit message.
 
-Branch: ${context.branch}
-Files changed: ${context.files.length}
-${context.files.map(f => `• ${f}`).join('\n')}
+Files changed (${context.stats.length}):
+${context.stats.map(f => `• ${f.file} (+${f.insertions}/-${f.deletions})`).join('\n')}
 
-Git diff:
-${context.diff}
-
-Summarize:
-1. What type of change is this (feature, fix, refactor, docs, test, etc.)
-2. What is the main purpose of these changes
-3. Any notable implementation details
-
-Keep your summary concise (2-4 sentences).`;
+Use grep/read tools to examine the actual changes. Summarize in 2-3 sentences:
+1. Type of change (feat/fix/refactor/docs/test)
+2. Main purpose
+3. Key details`;
   } else {
     // PR mode
     prompt = `Analyze these branch changes for a pull request.
 
 Branch: ${context.branch}
-Files changed: ${context.files.length}
+Files changed (${context.stats.length}):
+${context.stats.map(f => `• ${f.file} (+${f.insertions}/-${f.deletions})`).join('\n')}
+
 Commits:
 ${context.commits}
 
-Git diff:
-${context.diff}
-
-Provide a detailed analysis:
-1. What type of changes (feature, fix, refactor, etc.)
-2. The overall story/purpose of this branch
+${context.prTemplate ? `PR Template:\n${context.prTemplate}\n\n` : ''}Use grep/read tools to examine the actual changes. Provide detailed analysis:
+1. Type of changes (feat/fix/refactor/docs/test)
+2. Overall purpose of this branch
 3. Key implementation details
-4. Any breaking changes or important notes
-5. Suggested labels (bug, feature, enhancement, docs, etc.)
-
-Keep analysis clear and comprehensive.`;
+4. Any breaking changes or important notes`;
   }
 
   let summary = "";
@@ -96,9 +86,11 @@ Keep analysis clear and comprehensive.`;
     }
   });
 
-  await withSuppressedStderr(async () => {
-    await result.conversation;
-  });
+  // Suppress SDK debug logs by redirecting stderr during conversation wait
+  const originalStderr = process.stderr.write;
+  process.stderr.write = () => true;
+  await result.conversation;
+  process.stderr.write = originalStderr;
 
   if (!summary) {
     throw new Error("Failed to get analysis from agent");

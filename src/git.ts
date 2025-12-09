@@ -85,6 +85,8 @@ export async function pushToRemote(branch: string, setUpstream: boolean = false)
   await Bun.$`git push ${flags}`;
 }
 
+import type { FileChangeStats } from "./types";
+
 // PR template helper
 export async function getPRTemplate(): Promise<string | null> {
   const templatePath = ".github/PULL_REQUEST_TEMPLATE.md";
@@ -97,4 +99,56 @@ export async function getPRTemplate(): Promise<string | null> {
     // Ignore errors, template doesn't exist
   }
   return null;
+}
+
+
+
+export async function getStagedStats(): Promise<FileChangeStats[]> {
+  try {
+    const result = await Bun.$`git diff --cached --numstat`.quiet();
+    const lines = result.stdout.toString().trim().split("\n").filter(Boolean);
+
+    return lines.map(line => {
+      const parts = line.split("\t");
+      if (parts.length !== 3) return null;
+
+      const insertions = parts[0] || "0";
+      const deletions = parts[1] || "0";
+      const file = parts[2];
+      if (!file) return null;
+
+      return {
+        file,
+        insertions: parseInt(insertions, 10) || 0,
+        deletions: parseInt(deletions, 10) || 0,
+      };
+    }).filter((item): item is FileChangeStats => item !== null);
+  } catch {
+    return [];
+  }
+}
+
+export async function getBranchStats(baseBranch: string): Promise<FileChangeStats[]> {
+  try {
+    const result = await Bun.$`git diff --numstat ${baseBranch}...HEAD`.quiet();
+    const lines = result.stdout.toString().trim().split("\n").filter(Boolean);
+
+    return lines.map(line => {
+      const parts = line.split("\t");
+      if (parts.length !== 3) return null;
+
+      const insertions = parts[0] || "0";
+      const deletions = parts[1] || "0";
+      const file = parts[2];
+      if (!file) return null;
+
+      return {
+        file,
+        insertions: parseInt(insertions, 10) || 0,
+        deletions: parseInt(deletions, 10) || 0,
+      };
+    }).filter((item): item is FileChangeStats => item !== null);
+  } catch {
+    return [];
+  }
 }

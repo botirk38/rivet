@@ -3,10 +3,8 @@ import ora from "ora";
 import inquirer from "inquirer";
 import {
   getCurrentBranch,
-  getBranchDiff,
+  getBranchStats,
   getBranchCommits,
-  getChangedFilesCount,
-  getChangedFiles,
   hasUncommittedChanges,
   getPRTemplate,
   getBaseBranch
@@ -78,17 +76,13 @@ export async function raisePRCommand(options: { base?: string; draft?: boolean; 
     }
 
     // Get changes data
-    const diff = await getBranchDiff(baseBranch);
+    const stats = await getBranchStats(baseBranch);
     const commits = await getBranchCommits(baseBranch);
-    const filesCount = await getChangedFilesCount(baseBranch);
     const commitsList = commits.trim().split("\n").filter(Boolean);
 
-    if (!diff.trim() && !commits.trim()) {
+    if (stats.length === 0 && !commits.trim()) {
       throw new Error(`No changes found between ${baseBranch} and ${currentBranch}`);
     }
-
-    // Get files list for analysis
-    const files = await getChangedFiles(baseBranch);
 
     // Check for PR template
     const prTemplate = await getPRTemplate();
@@ -99,7 +93,7 @@ export async function raisePRCommand(options: { base?: string; draft?: boolean; 
     // Show summary
     console.log(chalk.blue("\nSummary:"));
     console.log(chalk.gray(`   Branch: ${chalk.white(currentBranch)} → ${chalk.white(baseBranch)}`));
-    console.log(chalk.gray(`   Files: ${chalk.white(filesCount)} file(s) changed`));
+    console.log(chalk.gray(`   Files: ${chalk.white(stats.length)} file(s) changed`));
     console.log(chalk.gray(`   Commits: ${chalk.white(commitsList.length)} commit(s)`));
     if (commitsList.length > 0 && commitsList.length <= 5) {
       commitsList.forEach(commit => {
@@ -115,7 +109,7 @@ export async function raisePRCommand(options: { base?: string; draft?: boolean; 
     // Analyze changes (Turn 1)
     const analyzeSpinner = ora(chalk.blue("Analyzing changes...")).start();
     const summary = await analyzeChanges(
-      { diff, branch: currentBranch, files, commits, prTemplate: prTemplate || undefined },
+      { stats, branch: currentBranch, commits, prTemplate: prTemplate || undefined },
       "pr"
     );
     analyzeSpinner.succeed(chalk.green("Changes analyzed"));
