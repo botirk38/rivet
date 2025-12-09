@@ -10,10 +10,15 @@ import { join } from "path";
 // Config file path
 const CONFIG_FILE = "rivet.config.json";
 
+type CommitStyle = "conventional" | "angular" | "simple" | "emoji";
+
 interface RivetConfig {
   apiKey?: string;
   model?: string;
   defaultBaseBranch?: string;
+  commitStyle?: CommitStyle;
+  commitSystemPrompt?: string;
+  prSystemPrompt?: string;
 }
 
 // Load config from file
@@ -141,6 +146,14 @@ type ConversationTurn = {
       message?: { text?: string };
     }>;
   };
+};
+
+// Commit style prompts
+const COMMIT_STYLE_PROMPTS: Record<CommitStyle, string> = {
+  conventional: "Use conventional commit format: type(scope): subject. Examples: feat(auth): add OAuth login, fix(ui): resolve button alignment, docs(readme): update installation instructions.",
+  angular: "Use Angular commit format with detailed body. Include type(scope): subject line, then detailed body explaining what changed and why. Include breaking changes section if applicable.",
+  simple: "Write a clear, concise one-line commit message that describes what changed and why.",
+  emoji: "Use gitmoji format: 🎉 type: subject. Examples: ✨ feat: add OAuth login, 🐛 fix: resolve button alignment, 📚 docs: update installation instructions."
 };
 
 // Extract the last assistant message from a conversation using functional style
@@ -286,15 +299,27 @@ async function commitCommand(options: { "no-verify"?: boolean; yes?: boolean }) 
     const generateSpinner = ora(chalk.blue("Generating commit message...")).start();
 
     const agent = await createAgent();
-    const prompt = `Analyze these git changes and create a commit message.
+    const config = await loadConfig();
+
+    // Build prompt with style and system instructions
+    const stylePrompt = config?.commitStyle
+      ? COMMIT_STYLE_PROMPTS[config.commitStyle]
+      : "Create a clear, descriptive commit message.";
+
+    const systemPrompt = config?.commitSystemPrompt
+      ? `\n\n${config.commitSystemPrompt}`
+      : "";
+
+    const prompt = `${stylePrompt}${systemPrompt}
+
+Analyze these git changes and create a commit message.
 
 Branch: ${branch}
 
 Git diff:
 ${diff}
 
-Return ONLY a commit message. Use conventional commit format if appropriate (type(scope): subject).
-Include a detailed body explaining what changed and why.`;
+Return ONLY a commit message.`;
 
     let commitMessage = "";
 
@@ -456,7 +481,14 @@ async function raisePRCommand(options: { base?: string; draft?: boolean; yes?: b
     const generateSpinner = ora(chalk.blue("Generating PR content...")).start();
 
     const agent = await createAgent();
-    const prompt = `Create a GitHub PR for these changes.
+    const prConfig = await loadConfig();
+
+    // Build prompt with system instructions
+    const systemPrompt = prConfig?.prSystemPrompt
+      ? `${prConfig.prSystemPrompt}\n\n`
+      : "";
+
+    const prompt = `${systemPrompt}Create a GitHub PR for these changes.
 
 Branch: ${currentBranch}
 Base branch: ${baseBranch}
@@ -715,6 +747,49 @@ async function initCommand() {
       },
     ]);
     config.defaultBaseBranch = defaultBaseBranch;
+
+    // Prompt for commit style
+    const { commitStyle } = await inquirer.prompt([
+      {
+        type: "list",
+        name: "commitStyle",
+        message: "Default commit message style:",
+        choices: [
+          { name: "conventional - feat(scope): subject", value: "conventional" },
+          { name: "angular - detailed body format", value: "angular" },
+          { name: "simple - clear one-line message", value: "simple" },
+          { name: "emoji - 🎉 type: subject", value: "emoji" },
+        ],
+        default: existingConfig?.commitStyle || "conventional",
+      },
+    ]);
+    config.commitStyle = commitStyle;
+
+    // Prompt for commit system prompt
+    const { commitSystemPrompt } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "commitSystemPrompt",
+        message: "Custom commit instructions (optional):",
+        default: existingConfig?.commitSystemPrompt || "",
+      },
+    ]);
+    if (commitSystemPrompt.trim()) {
+      config.commitSystemPrompt = commitSystemPrompt.trim();
+    }
+
+    // Prompt for PR system prompt
+    const { prSystemPrompt } = await inquirer.prompt([
+      {
+        type: "input",
+        name: "prSystemPrompt",
+        message: "Custom PR instructions (optional):",
+        default: existingConfig?.prSystemPrompt || "",
+      },
+    ]);
+    if (prSystemPrompt.trim()) {
+      config.prSystemPrompt = prSystemPrompt.trim();
+    }
 
     // Save config
     await saveConfig(config);
