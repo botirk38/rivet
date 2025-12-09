@@ -1,27 +1,64 @@
 {
-  "name": "rivet",
-  "version": "0.1.0",
-  "module": "index.ts",
-  "type": "module",
-  "bin": {
-    "rivet": "./index.ts"
-  },
-  "private": true,
-  "scripts": {
-    "postinstall": "chmod +x node_modules/@cursor-ai/january/bin/rg 2>/dev/null || true"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
-  },
-  "dependencies": {
-    "@cursor-ai/january": "^0.2.1",
-    "@types/inquirer": "^9.0.9",
-    "chalk": "^5.6.2",
-    "commander": "^14.0.2",
-    "inquirer": "^13.0.2",
-    "ora": "^9.0.0"
-  }
+	"name": "@myscope/rivet",
+	"version": "0.1.0",
+	"description": "AI-powered git commits and PR creation using Cursor Agent SDK",
+	"module": "index.ts",
+	"type": "module",
+	"bin": {
+		"rivet": "./index.ts"
+	},
+	"private": false,
+	"files": [
+		"index.ts",
+		"src/"
+	],
+	"scripts": {
+		"postinstall": "chmod +x node_modules/@cursor-ai/january/bin/rg 2>/dev/null || true",
+		"typecheck": "bunx tsc --noEmit",
+		"lint": "bunx biome check .",
+		"lint:fix": "bunx biome check --write .",
+		"format": "bunx biome format --write .",
+		"format:check": "bunx biome format .",
+		"check": "bunx biome check .",
+		"check:fix": "bunx biome check --write .",
+		"test": "bun test",
+		"changeset": "bunx changeset",
+		"version": "bunx changeset version",
+		"release": "bunx changeset publish"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/botirk38/rivet.git"
+	},
+	"keywords": [
+		"git",
+		"commit",
+		"ai",
+		"cli",
+		"cursor",
+		"bun"
+	],
+	"author": "Botir Khaltaev <btrghstk@gmail.com>",
+	"license": "MIT",
+	"bugs": {
+		"url": "https://github.com/botirk38/rivet/issues"
+	},
+	"homepage": "https://github.com/botirk38/rivet#readme",
+	"devDependencies": {
+		"@biomejs/biome": "2.3.8",
+		"@changesets/changelog-github": "^0.5.2",
+		"@changesets/cli": "^2.29.8",
+		"@types/bun": "latest"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"@cursor-ai/january": "^0.2.1",
+		"@types/inquirer": "^9.0.9",
+		"chalk": "^5.6.2",
+		"commander": "^14.0.2",
+		"inquirer": "^13.0.2",
+		"ora": "^9.0.0"
+	}
 }
