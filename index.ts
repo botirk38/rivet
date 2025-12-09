@@ -21,6 +21,21 @@ interface RivetConfig {
   prSystemPrompt?: string;
 }
 
+// Prompt result types
+type ConfirmPromptResult = { accept: boolean };
+type FeedbackPromptResult = { feedback: string };
+type OverwritePromptResult = { overwrite: boolean };
+type ApiKeyPromptResult = { apiKey: string };
+type ModelPromptResult = { model: string };
+type BaseBranchPromptResult = { defaultBaseBranch: string };
+type CommitStylePromptResult = { commitStyle: CommitStyle };
+type CommitSystemPromptResult = { commitSystemPrompt: string };
+type PrSystemPromptResult = { prSystemPrompt: string };
+type PushPromptResult = { push: boolean };
+
+// Agent message types
+type TextMessage = { text?: string };
+
 // Load config from file
 async function loadConfig(): Promise<RivetConfig | null> {
   const configPath = join(process.cwd(), CONFIG_FILE);
@@ -98,6 +113,20 @@ async function getBaseBranch(): Promise<string> {
   } catch {
     return "master";
   }
+}
+
+async function hasUpstream(): Promise<boolean> {
+  try {
+    await Bun.$`git rev-parse --abbrev-ref @{upstream}`.quiet();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pushToRemote(branch: string, setUpstream: boolean = false): Promise<void> {
+  const flags = setUpstream ? ["-u", "origin", branch] : [];
+  await Bun.$`git push ${flags}`;
 }
 
 // Initialize agent
@@ -192,7 +221,7 @@ async function replLoop<T>(
       return { accepted: true, value: currentValue };
     }
 
-    const { accept } = await inquirer.prompt<{ accept: boolean }>([
+    const { accept } = await inquirer.prompt<ConfirmPromptResult>([
       {
         type: "confirm",
         name: "accept",
@@ -206,7 +235,7 @@ async function replLoop<T>(
     }
 
     // User said no - get feedback
-    const { feedback } = await inquirer.prompt<{ feedback: string }>([
+    const { feedback } = await inquirer.prompt<FeedbackPromptResult>([
       {
         type: "input",
         name: "feedback",
@@ -332,7 +361,7 @@ Return ONLY a commit message.`;
       },
       onStep: ({ step }) => {
         if (step.type === "assistantMessage") {
-          const msg = step.message as { text?: string };
+          const msg = step.message as TextMessage;
           if (msg?.text) {
             commitMessage = msg.text.trim();
           }
@@ -368,7 +397,7 @@ Return ONLY a commit message.`;
         message: prompt,
         onStep: ({ step }) => {
           if (step.type === "assistantMessage") {
-            const msg = step.message as { text?: string };
+            const msg = step.message as TextMessage;
             if (msg?.text) message = msg.text.trim();
           }
         }
@@ -411,7 +440,37 @@ Generate an improved commit message based on this feedback. Return ONLY the comm
     const commitSpinner = ora("Creating commit...").start();
     await createCommit(finalMessage, options["no-verify"]);
     commitSpinner.succeed(chalk.green("Commit created successfully!"));
-    
+
+    // Ask about pushing to remote
+    const { push } = await inquirer.prompt<PushPromptResult>([
+      {
+        type: "confirm",
+        name: "push",
+        message: "Push to remote?",
+        default: true,
+      },
+    ]);
+
+    if (push) {
+      const pushSpinner = ora("Pushing to remote...").start();
+      try {
+        const branch = await getCurrentBranch();
+        const hasUpstreamBranch = await hasUpstream();
+
+        await pushToRemote(branch, !hasUpstreamBranch);
+
+        if (hasUpstreamBranch) {
+          pushSpinner.succeed(chalk.green("Pushed to remote"));
+        } else {
+          pushSpinner.succeed(chalk.green(`Pushed to remote (set upstream to origin/${branch})`));
+        }
+      } catch (error) {
+        pushSpinner.fail(chalk.red("Failed to push to remote"));
+        console.log(chalk.gray("You can push manually with: git push"));
+        // Don't exit with error since commit succeeded
+      }
+    }
+
     console.log(chalk.green("\nDone!"));
   } catch (error) {
     console.error(chalk.red("\nError:"), error instanceof Error ? error.message : String(error));
@@ -519,7 +578,7 @@ Use appropriate labels like: bug, feature, enhancement, documentation, refactor,
       },
       onStep: ({ step }) => {
         if (step.type === "assistantMessage") {
-          const msg = step.message as { text?: string };
+          const msg = step.message as TextMessage;
           if (msg?.text) {
             responseText = msg.text.trim();
           }
@@ -584,12 +643,12 @@ Use appropriate labels like: bug, feature, enhancement, documentation, refactor,
       let text = "";
       const genResult = agent.submit({
         message: prompt,
-        onStep: ({ step }) => {
-          if (step.type === "assistantMessage") {
-            const msg = step.message as { text?: string };
-            if (msg?.text) text = msg.text.trim();
-          }
+      onStep: ({ step }) => {
+        if (step.type === "assistantMessage") {
+          const msg = step.message as TextMessage;
+          if (msg?.text) text = msg.text.trim();
         }
+      }
       });
       const convo = await genResult.conversation;
       const responseText = text || extractLastAssistantMessage(convo as ConversationTurn[]);
@@ -685,7 +744,7 @@ async function initCommand() {
 
     // Check if config already exists
     if (existingConfig) {
-      const { overwrite } = await inquirer.prompt([
+      const { overwrite } = await inquirer.prompt<OverwritePromptResult>([
         {
           type: "confirm",
           name: "overwrite",
@@ -701,7 +760,7 @@ async function initCommand() {
     }
 
     // Prompt for API key
-    const { apiKey } = await inquirer.prompt([
+    const { apiKey } = await inquirer.prompt<ApiKeyPromptResult>([
       {
         type: "input",
         name: "apiKey",
@@ -721,7 +780,7 @@ async function initCommand() {
     }
 
     // Prompt for model
-    const { model } = await inquirer.prompt([
+    const { model } = await inquirer.prompt<ModelPromptResult>([
       {
         type: "list",
         name: "model",
@@ -738,7 +797,7 @@ async function initCommand() {
 
     // Prompt for default base branch
     const currentBase = await getBaseBranch().catch(() => "main");
-    const { defaultBaseBranch } = await inquirer.prompt([
+    const { defaultBaseBranch } = await inquirer.prompt<BaseBranchPromptResult>([
       {
         type: "input",
         name: "defaultBaseBranch",
@@ -749,7 +808,7 @@ async function initCommand() {
     config.defaultBaseBranch = defaultBaseBranch;
 
     // Prompt for commit style
-    const { commitStyle } = await inquirer.prompt([
+    const { commitStyle } = await inquirer.prompt<CommitStylePromptResult>([
       {
         type: "list",
         name: "commitStyle",
@@ -766,7 +825,7 @@ async function initCommand() {
     config.commitStyle = commitStyle;
 
     // Prompt for commit system prompt
-    const { commitSystemPrompt } = await inquirer.prompt([
+    const { commitSystemPrompt } = await inquirer.prompt<CommitSystemPromptResult>([
       {
         type: "input",
         name: "commitSystemPrompt",
@@ -779,7 +838,7 @@ async function initCommand() {
     }
 
     // Prompt for PR system prompt
-    const { prSystemPrompt } = await inquirer.prompt([
+    const { prSystemPrompt } = await inquirer.prompt<PrSystemPromptResult>([
       {
         type: "input",
         name: "prSystemPrompt",
